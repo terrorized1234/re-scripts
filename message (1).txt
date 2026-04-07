@@ -1,0 +1,242 @@
+local svc = {}
+local gs = cloneref or function(o) return o end
+local function call(n)
+    return gs(game:GetService(n))
+end
+
+svc.plr = call("Players")
+svc.rep = call("ReplicatedStorage")
+svc.http = call("HttpService")
+svc.run = call("RunService")
+
+local lp = svc.plr.LocalPlayer
+local exec = string.lower(tostring(identifyexecutor()))
+
+-- state
+local selectedSkins = {}
+local scEnabled = false
+local weaponSel = "Assault Rifle"
+local skinSel = "None"
+local origNew = nil
+
+local function getReq(path)
+    local mod = lp.PlayerScripts
+    for _, seg in ipairs(path) do
+        mod = mod[seg]
+    end
+    return require(mod)
+end
+
+local function saveConfig()
+    local data = svc.http:JSONEncode({
+        SelectedSkins = selectedSkins,
+        SkinChangerEnabled = scEnabled,
+        CurrentWeaponSelection = weaponSel,
+    })
+    writefile("Rivals_SkinConfig.json", data)
+end
+
+local function hookViewModel()
+    local vmMod = lp.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem.ClientViewModel
+    local vm = require(vmMod)
+
+    if origNew then return end
+    origNew = vm.new
+
+    vm.new = function(self, itemData)
+        local enumLib = require(svc.rep.Modules.EnumLibrary)
+        local itemLib = require(svc.rep.Modules.ItemLibrary)
+
+        local name = itemData and itemData.Name
+        local chosenSkin = selectedSkins[name]
+
+        if scEnabled and chosenSkin and chosenSkin ~= "None" then
+            local skinData = itemLib.ViewModels[chosenSkin]
+            if skinData then
+                itemData = table.clone(itemData)
+                itemData.Name = chosenSkin
+            end
+        end
+
+        return origNew(self, itemData)
+    end
+end
+
+local function unhookViewModel()
+    if not origNew then return end
+    local vmMod = lp.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem.ClientViewModel
+    local vm = require(vmMod)
+    vm.new = origNew
+    origNew = nil
+end
+
+local function reapplySkin()
+    local fc = getReq({"Controllers", "FighterController"})
+    local fighter = fc.LocalFighter
+    if not fighter then
+        return nil, "No local fighter"
+    end
+
+    local item = fighter.EquippedItem
+    if not item then
+        return nil, "No equipped item"
+    end
+
+    local itemLib = require(svc.rep.Modules.ItemLibrary)
+    local vm = item.ViewModel
+    local name = item.Name
+    local chosenSkin = selectedSkins[name]
+
+    if not chosenSkin or chosenSkin == "None" then
+        return nil, "No skin selected for " .. name
+    end
+
+    local skinData = itemLib.ViewModels[chosenSkin]
+    if not skinData then
+        return nil, "Skin data not found"
+    end
+
+    vm.Name = chosenSkin
+    vm.Info = skinData
+    vm.Animator:StopAllAnimations()
+    vm.Animator:LoadAnimations()
+    vm.Animator:PlayIdleAnimation()
+
+    return true
+end
+
+-- preload modules
+task.defer(function()
+    require(svc.rep.Modules.CosmeticLibrary)
+    local itemLib = require(svc.rep.Modules.ItemLibrary)
+    for _, v in pairs(require(svc.rep.Modules.CosmeticLibrary).Cosmetics) do
+        local _ = v.Type
+    end
+end)
+
+-- fluent ui
+local fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local saveMgr = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local ifaceMgr = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+
+local win = fluent:CreateWindow({
+    Title = "Rivals Skin Changer",
+    SubTitle = "Standalone",
+    MinimizeKey = Enum.KeyCode.LeftShift,
+    Theme = "Darker",
+    Acrylic = false,
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+})
+
+local tabSkins = win:AddTab({ Title = "Skins", Icon = "brush" })
+local tabSettings = win:AddTab({ Title = "Settings", Icon = "settings" })
+local sec = tabSkins:AddSection("Inventory Configuration")
+
+sec:AddToggle("SkinChangerEnabled", {
+    Title = "Enable Skin Changer",
+    Default = false,
+    Callback = function(val)
+        scEnabled = val
+        if val then
+            hookViewModel()
+            fluent:Notify({ Title = "Enabled", Content = "Skin changer is now active.", Duration = 2 })
+        else
+            unhookViewModel()
+            fluent:Notify({ Title = "Disabled", Content = "Skin changer turned off.", Duration = 2 })
+        end
+        saveConfig()
+    end,
+})
+
+local ddWeapon = sec:AddDropdown("SkinWeapon", {
+    Title = "Select Weapon",
+    Default = 1,
+    Multi = false,
+    Values = {
+        "Assault Rifle","Battle Axe","Bow","Burst Rifle","Chainsaw",
+        "Crossbow","Daggers","Distortion","Energy Pistols","Energy Rifle",
+        "Exogun","Fists","Flamethrower","Flare Gun","Flashbang",
+        "Freeze Ray","Grenade","Grenade Launcher","Gunblade","Handgun",
+        "Jump Pad","Katana","Knife","Maul","Medkit",
+        "Minigun","Molotov","Paintball Gun","Permafrost","RPG",
+        "Revolver","Riot Shield","Satchel","Scythe","Shorty",
+        "Shotgun","Slingshot","Smoke Grenade","Sniper","Spray",
+        "Subspace Tripmine","Trowel","Uzi","War Horn","Warper","Warpstone",
+    },
+})
+
+local ddSkin = sec:AddDropdown("SkinSelection", {
+    Title = "Select Skin",
+    Default = 1,
+    Multi = false,
+    Values = {
+        "None","Assault Rifle","10B Visits","AK-47","AKEY-47",
+        "AUG","Boneclaw Rifle","Gingerbread AUG","Glorious Assault Rifle",
+        "Phoenix Rifle","Tommy Gun",
+    },
+})
+
+ddWeapon:OnChanged(function(val)
+    weaponSel = val
+    ddSkin:SetValues({ "None" })
+    ddSkin:SetValue("None")
+    fluent:Notify({ Title = "Weapon Selected", Content = "Viewing skins for: " .. val, Duration = 2 })
+end)
+
+ddSkin:OnChanged(function(val)
+    skinSel = val
+    selectedSkins[weaponSel] = val
+    saveConfig()
+    fluent:Notify({ Title = "Skin Selected", Content = weaponSel .. " → " .. val, Duration = 2 })
+end)
+
+sec:AddButton({
+    Title = "Update",
+    Description = "Force re-apply the selected skin to your current weapon",
+    Callback = function()
+        local ok, err = reapplySkin()
+        if ok then
+            fluent:Notify({ Title = "Updated", Content = "Skin applied.", Duration = 2 })
+        else
+            fluent:Notify({ Title = "Error", Content = err or "Unknown error", Duration = 2 })
+        end
+    end,
+})
+
+tabSkins:AddSection("Utilities"):AddButton({
+    Title = "Clear All Selections",
+    Description = "Reset every weapon back to its default skin",
+    Callback = function()
+        selectedSkins = {}
+        unhookViewModel()
+        if scEnabled then hookViewModel() end
+        saveConfig()
+        fluent:Notify({ Title = "Cleared", Content = "All skin selections have been reset.", Duration = 2 })
+    end,
+})
+
+saveMgr:SetLibrary(fluent)
+ifaceMgr:SetLibrary(fluent)
+saveMgr:IgnoreThemeSettings()
+saveMgr:SetIgnoreIndexes({ "SkinWeapon", "SkinSelection" })
+ifaceMgr:SetFolder("RivalsSkinChanger")
+saveMgr:SetFolder("RivalsSkinChanger/configs")
+ifaceMgr:BuildInterfaceSection(tabSettings)
+saveMgr:BuildConfigSection(tabSettings)
+
+win:SelectTab(1)
+fluent:Notify({
+    Title = "Rivals Skin Changer",
+    Content = "Loaded. Executor: " .. exec,
+    Duration = 4,
+})
+
+saveMgr:LoadAutoloadConfig()
+
+task.spawn(function()
+    task.wait(1)
+    fluent.Unloaded:Wait()
+    unhookViewModel()
+    saveConfig()
+end)
